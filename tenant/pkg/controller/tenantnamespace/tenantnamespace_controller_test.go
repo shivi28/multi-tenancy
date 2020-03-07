@@ -17,9 +17,15 @@ limitations under the License.
 package tenantnamespace
 
 import (
+	"crypto/rsa"
+	"github.com/kubernetes-sigs/multi-tenancy/tenant/certdemo"
 	"github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/controller/tenant"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/cert"
+
 	//"k8s.io/client-go/tools/clientcmd"
 	"testing"
+
 	"time"
 
 	tenancyv1alpha1 "github.com/kubernetes-sigs/multi-tenancy/tenant/pkg/apis/tenancy/v1alpha1"
@@ -312,7 +318,6 @@ func TestReconcile(t *testing.T) {
 	testImportExistingNamespace(c, g, t, requests)
 }
 
-
 func TestBothReconcile(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
 
@@ -336,56 +341,117 @@ func TestBothReconcile(t *testing.T) {
 	}()
 
 	//testRolesAndRolesBindingsExistingCluster(c, g, t)
-	testingImpersonate(c,g,t)
+	//testingImpersonate(c,g,t)
+	TestingGeneratingKubeConfigFile(c, g, t)
 	//testRolesAndRolesBindingsTestingCluster(c, g, t)
 }
 
-func testingImpersonate(c client.Client, g *gomega.GomegaWithT, t *testing.T) {
-	saWithKindCfg := &corev1.ServiceAccount{
-		TypeMeta:                     metav1.TypeMeta{
-		//	Kind:"ServiceAccount",
-		},
-		ObjectMeta:                   metav1.ObjectMeta{
-			Name:"shivanisinghal",
-			Namespace:"default",
-		},
-		Secrets:                      nil,
-		ImagePullSecrets:             nil,
-		AutomountServiceAccountToken: nil,
-	}
-	err := c.Create(context.TODO(), saWithKindCfg)
-	if err != nil{
-		t.Logf("Failed to create serviceaccount with kind config error: %+v ", err)
-		return
-	}
-	defer c.Delete(context.TODO(),saWithKindCfg)
+//
+func TestingGeneratingKubeConfigFile(c client.Client, g *gomega.GomegaWithT, t *testing.T) {
 
-	// now add impersonation
-	cfg.Impersonate.UserName="shivanisinghal"
-	//cfg.Impersonate.Groups=[]string{"system:serviceaccounts:default"}
+	certCfg := cert.Config{
+		CommonName:   "employee",
+		Organization: nil,
+		AltNames:     cert.AltNames{},
+		Usages:       nil,
+	}
 
-	//create new manager and client for user
-	mgr, err := manager.New(cfg, manager.Options{})
+	pkiCfg := certdemo.CertConfig{
+		Config: certCfg,
+	}
+	rootCACrt, rootKey, rootCAErr := certdemo.NewCertificateAuthority(&pkiCfg)
+
+	if rootCAErr != nil {
+		t.Logf("rootCAErr, rootCACrt, rootkey %+v %+v %+v ", rootCACrt, rootKey, rootCAErr)
+	}
+
+	rootRsaKey, ok := rootKey.(*rsa.PrivateKey)
+	if !ok {
+		t.Logf("fail to assert rsa PrivateKey %+v rootRsaKey %+v ", ok, rootRsaKey)
+	}
+
+	rootCAPair := certdemo.CrtKeyPair{
+		Crt: rootCACrt,
+		Key: rootRsaKey,
+	}
+
+	cfgStr, err := certdemo.GenerateKubeconfig("shivanisinghal", "kind-kind", cfg.Host, []string{"system:serviceaccounts:default"}, &rootCAPair)
+	if err != nil {
+		t.Logf("failed to generatekubeconfig file for %+v error: %+v", cfgStr, err)
+	}
+
+	userCfg, err := clientcmd.RESTConfigFromKubeConfig([]byte(cfgStr))
+
+	//setup manager and client
+	mgr, err := manager.New(userCfg, manager.Options{})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	userClient := mgr.GetClient()
+	ca := mgr.GetClient()
 
-
-	sa2:=&corev1.ServiceAccount{
-		TypeMeta:                     metav1.TypeMeta{
-		//	Kind:"ServiceAccount",
-		},
-		ObjectMeta:                   metav1.ObjectMeta{
-			Name:"shivani-singhal2",
-			Namespace:"default",
+	sa2 := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shivani-singhal2",
+			Namespace: "default",
 		},
 		Secrets:                      nil,
 		ImagePullSecrets:             nil,
 		AutomountServiceAccountToken: nil,
 	}
-	err = userClient.Create(context.TODO(), sa2)
-	if err != nil{
+	err = ca.Create(context.TODO(), sa2)
+	if err != nil {
 		t.Logf("Failed to create serviceaccount with user config error: %+v ", err)
 		return
 	}
-	defer userClient.Delete(context.TODO(), sa2)
+	defer ca.Delete(context.TODO(), sa2)
+
 }
+
+//
+//func testingImpersonate(c client.Client, g *gomega.GomegaWithT, t *testing.T) {
+//	saWithKindCfg := &corev1.ServiceAccount{
+//		TypeMeta:                     metav1.TypeMeta{
+//		//	Kind:"ServiceAccount",
+//		},
+//		ObjectMeta:                   metav1.ObjectMeta{
+//			Name:"shivanisinghal",
+//			Namespace:"default",
+//		},
+//		Secrets:                      nil,
+//		ImagePullSecrets:             nil,
+//		AutomountServiceAccountToken: nil,
+//	}
+//	err := c.Create(context.TODO(), saWithKindCfg)
+//	if err != nil{
+//		t.Logf("Failed to create serviceaccount with kind config error: %+v ", err)
+//		return
+//	}
+//	defer c.Delete(context.TODO(),saWithKindCfg)
+//
+//	// now add impersonation
+//	cfg.Impersonate.UserName="shivanisinghal"
+//	cfg.Impersonate.Groups=[]string{"system:serviceaccounts:default"}
+//
+//	//create new manager and client for user
+//	mgr, err := manager.New(cfg, manager.Options{})
+//	g.Expect(err).NotTo(gomega.HaveOccurred())
+//	userClient := mgr.GetClient()
+//
+//
+//	sa2:=&corev1.ServiceAccount{
+//		TypeMeta:                     metav1.TypeMeta{
+//		//	Kind:"ServiceAccount",
+//		},
+//		ObjectMeta:                   metav1.ObjectMeta{
+//			Name:"shivani-singhal2",
+//			Namespace:"default",
+//		},
+//		Secrets:                      nil,
+//		ImagePullSecrets:             nil,
+//		AutomountServiceAccountToken: nil,
+//	}
+//	err = userClient.Create(context.TODO(), sa2)
+//	if err != nil{
+//		t.Logf("Failed to create serviceaccount with user config error: %+v ", err)
+//		return
+//	}
+//	defer userClient.Delete(context.TODO(), sa2)
+//}
